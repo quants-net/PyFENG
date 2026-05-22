@@ -26,9 +26,16 @@ class SabrMcTimeDisc(sabr.SabrABC, CondMcBsmABC):
 
     Supports three avgvar_scheme options for the conditional average variance:
         0 — trapezoidal approximation (default)
-        1 — Chen (2012) moment-matched lognormal
-        2 — Choi, Hu & Kwok (2026) moment-matched shifted lognormal
+        1 — moment-matched lognormal (lam=1)
+        2 — moment-matched shifted lognormal (lam=5/6)
 
+    References:
+        - Chen B, Oosterlee CW, Van Der Weide H (2012) A low-bias simulation scheme for
+          the SABR stochastic volatility model. Int J Theor Appl Finan 15:1250016.
+          https://doi.org/10.1142/S0219024912500161
+        - Choi J, Hu L, Kwok YK (2026) Efficient and accurate simulation of the
+          stochastic-alpha-beta-rho model. European Journal of Operational Research 329:166–179.
+          https://doi.org/10.1016/j.ejor.2025.09.027
     """
 
     avgvar_scheme: int = 0
@@ -55,45 +62,44 @@ class SabrMcTimeDisc(sabr.SabrABC, CondMcBsmABC):
     def cond_states_step_trapez(self, dt):
         """
         avgvar_scheme=0: trapezoidal approximation I_t^h ≈ (1 + σ_ratio²) / 2.
+
+        References:
+            - Choi J, Hu L, Kwok YK (2026) Efficient and accurate simulation of the
+              stochastic-alpha-beta-rho model. (baseline scheme)
         """
         sigma_ratio = self.vol_step(dt)
         I_t = (1 + sigma_ratio**2) / 2.
         return sigma_ratio, I_t
 
-    def cond_states_step_chen2012(self, dt):
+    def cond_states_step_lognormal(self, dt):
         """
-        avgvar_scheme=1: moment-matched lognormal approximation (Chen 2012).
-        Equivalent to avgvar_scheme=2 with lam=1 (no shift).
+        Moment-matched (shifted) lognormal approximation for the conditional average variance.
+
+        avgvar_scheme=1: plain lognormal (lam=1).
+        avgvar_scheme=2: shifted lognormal (lam=5/6).
+
+        References:
+            - Chen B, Oosterlee CW, Van Der Weide H (2012) A low-bias simulation scheme for
+              the SABR stochastic volatility model. Int J Theor Appl Finan 15:1250016.
+              https://doi.org/10.1142/S0219024912500161
+            - Choi J, Hu L, Kwok YK (2026) Efficient and accurate simulation of the
+              stochastic-alpha-beta-rho model. (Algorithm 1, Eq. 9)
         """
+        lam = 1.0 if self.avgvar_scheme == 1 else 5.0/6.0
         vovn = self.vov * np.sqrt(dt)
         log_ratio = self.vol_step(dt, log=True)
         zhat = log_ratio / vovn
 
         mean_I, var_scaled, _, _ = self.cond_avgvar_mvsk(vovn, zhat)
-        sln = DistLognormal.from_mv(mean=mean_I, var_scaled=var_scaled, lam=1.0)
-        I_t = sln.draw(rng=self.rngs[2])
-
-        return np.exp(log_ratio), I_t
-
-    def cond_states_step_choihukwok2026(self, dt):
-        """
-        avgvar_scheme=2: moment-matched shifted lognormal (SLN) approximation
-        with fixed λ = 5/6 (Choi, Hu & Kwok 2026, Algorithm 1, Eq. 9).
-        """
-        vovn = self.vov * np.sqrt(dt)
-        log_ratio = self.vol_step(dt, log=True)
-        zhat = log_ratio / vovn
-
-        mean_I, var_scaled, _, _ = self.cond_avgvar_mvsk(vovn, zhat)
-        sln = DistLognormal.from_mv(mean=mean_I, var_scaled=var_scaled, lam=5.0/6.0)
+        sln = DistLognormal.from_mv(mean=mean_I, var_scaled=var_scaled, lam=lam)
         I_t = sln.draw(rng=self.rngs[2])
 
         return np.exp(log_ratio), I_t
 
     _AVGVAR_SCHEMES = {
-        0: cond_states_step_trapez,
-        1: cond_states_step_chen2012,
-        2: cond_states_step_choihukwok2026,
+        0: cond_states_step_trapez,      # trapezoidal approximation
+        1: cond_states_step_lognormal,   # lognormal (lam=1), Chen et al. (2012)
+        2: cond_states_step_lognormal,   # shifted lognormal (lam=5/6), Choi et al. (2026)
     }
 
     def cond_states_step(self, dt):
@@ -102,8 +108,8 @@ class SabrMcTimeDisc(sabr.SabrABC, CondMcBsmABC):
 
         Dispatches to the implementation selected by self.avgvar_scheme:
             0 — trapezoidal (default)
-            1 — Chen (2012) lognormal
-            2 — Choi, Hu & Kwok (2026) shifted lognormal
+            1 — lognormal, lam=1 (Chen 2012)
+            2 — shifted lognormal, lam=5/6 (Choi, Hu & Kwok 2026)
 
         Because sigma evolves multiplicatively, all quantities scale out of sigma_0:
         the returned (sigma_ratio, I_t) are independent of the current level.
@@ -608,7 +614,7 @@ class SabrMcCai2017Exact(SabrMcTimeDisc):
 @dataclass
 class SabrMcChoiHuKwok2026(SabrMcTimeDisc):
     """
-    Choi, Hu & Kwok (2026) simulation scheme for the SABR model.
+    Choi et al. (2026) simulation scheme for the SABR model.
 
     Two-step simulation per time step h (Algorithm 4 of the paper):
 
@@ -630,7 +636,8 @@ class SabrMcChoiHuKwok2026(SabrMcTimeDisc):
 
     References:
         - Choi J, Hu L, Kwok YK (2026) Efficient and accurate simulation of the
-          stochastic-alpha-beta-rho model.
+          stochastic-alpha-beta-rho model. European Journal of Operational Research 329:166–179.
+          https://doi.org/10.1016/j.ejor.2025.09.027
     """
 
     avgvar_scheme: int = 2
