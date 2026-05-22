@@ -653,34 +653,34 @@ class SabrMcChoiHuKwok2026(SabrMcTimeDisc):
         dt_arr = np.diff(tobs, prepend=0)
 
         sigma_t = np.full(self.n_path, alpha)
-        fwd_t = np.full(self.n_path, 1.0)   # normalized: F_0/fwd = 1
+        log_fwd_t = np.zeros(self.n_path)    # log(F̃_0) = log(1) = 0
         nz = np.ones(self.n_path, dtype=bool)  # True = path not yet absorbed
 
         for dt in dt_arr:
             sigma_ratio, I_t = self.cond_states_step(dt)
             if nz.any():
-                f = fwd_t[nz]
-                f_bc = f**betac
+                log_f = log_fwd_t[nz]
+                f_bc = np.exp(betac * log_f)  # F̃_t^{β*} = exp(β* · log F̃_t)
 
                 # Rho-correlated shift — Eq. (16b) in normalised space.
                 # sigma_t tracks σ̃_t = σ_t / fwd^{β*}, starting at alpha.
-                #   F̃_t^h = F̃_t · exp( ρ·σ̃_t·(σ_ratio−1)/(ν·F̃_t^{β*})
-                #                      − ρ²·σ̃_t²·Ī·h/(2·F̃_t^{2β*}) )
-                fwd_bar = f * np.exp(
+                #   log F̃_t^h = log F̃_t + ρ·σ̃_t·(σ_ratio−1)/(ν·F̃_t^{β*})
+                #                         − ρ²·σ̃_t²·Ī·h/(2·F̃_t^{2β*})
+                log_fwd_bar = log_f + (
                     self.rho * sigma_t[nz] / f_bc * ((sigma_ratio[nz] - 1) / self.vov
                     - 0.5 * self.rho * sigma_t[nz] * I_t[nz] * dt / f_bc)
                 )
                 # Rhoc residual — exact CEV step (Kang 2014), Eq. (16a):
                 #   var = (β* · ρ_c · σ̃_t)² · Ī · h
                 var = (betac * rhoc * sigma_t[nz])**2 * I_t[nz] * dt
-                new_f = CevMc._kang_step(fwd_bar, var, betac, self.rngs[5])
-                fwd_t[nz] = new_f
-                nz[nz] = new_f > 0   # mark newly absorbed paths
+                log_new_f = CevMc._kang_step(log_fwd_bar, var, betac, self.rngs[5], log=True)
+                log_fwd_t[nz] = log_new_f
+                nz[nz] = log_new_f > -np.inf   # -inf marks absorbed paths
             sigma_t *= sigma_ratio
 
         kk = np.atleast_1d(strike) / fwd
         scalar_output = np.ndim(strike) == 0
-        payoff = np.mean(np.fmax(cp * (fwd_t - kk[:, None]), 0), axis=1)
+        payoff = np.mean(np.fmax(cp * (np.exp(log_fwd_t) - kk[:, None]), 0), axis=1)
         price = df * fwd * payoff
         return price.item() if scalar_output else price
 

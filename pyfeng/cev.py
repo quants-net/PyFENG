@@ -350,7 +350,7 @@ class CevMc(CevParams, OptABC):
 
 
     @staticmethod
-    def _kang_step(spot, var, betac, rng):
+    def _kang_step(spot, var, betac, rng, log=False):
         """
         One Kang (2014) exact CEV step for a batch of paths.
 
@@ -360,14 +360,21 @@ class CevMc(CevParams, OptABC):
         absorbed at zero.
 
         Args:
-            spot: current (growth-adjusted) prices, shape (n_path,)
+            spot: current (growth-adjusted) prices, shape (n_path,).
+                  If log=True, interpreted as log-prices; absorbed paths
+                  should be passed as -inf.
             var:  effective variance (betac · sigma_eff)² · t_eff,
                   scalar or shape (n_path,) for path-dependent vol
             betac: 1 − beta
             rng:  numpy Generator for the three draws (Gamma, Poisson, Gamma)
+            log:  if True, input and output are log-prices. Pass absorbed
+                  paths as -inf; exp(-inf)=0 so z0 vanishes cleanly.
+                  Output: -inf for absorbed paths (check: x > -inf).
+                  Avoids the final power (0.5/betac) by returning
+                  log(var·zt) · (0.5/betac) directly.
 
         Returns:
-            next prices, shape (n_path,)
+            next prices (or log-prices if log=True), shape (n_path,)
 
         References:
             - Kang C (2014) Simulation of the Shifted Poisson Distribution with
@@ -375,7 +382,10 @@ class CevMc(CevParams, OptABC):
               Engineering 20:27–32. https://doi.org/10.7737/MSFE.2014.20.1.027
         """
         n = len(spot)
-        z0 = np.where(spot > 0.0, np.power(np.maximum(spot, 0.0), 2.0 * betac) / var, 0.0)
+        if log:
+            z0 = np.exp(2.0 * betac * spot) / var
+        else:
+            z0 = np.power(np.maximum(spot, 0.0), 2.0 * betac) / var
         rv_gam = 2.0 * rng.standard_gamma(0.5 / betac, size=n)
         pois_lam = (z0 - rv_gam) / 2.0
 
@@ -383,7 +393,10 @@ class CevMc(CevParams, OptABC):
         n_pois = np.zeros(n, dtype=int)
         n_pois[pos] = rng.poisson(pois_lam[pos])
         zt = 2.0 * rng.standard_gamma(n_pois + 1.0)
-        return np.where(pos, np.power(var * zt, 0.5 / betac), 0.0)
+        if log:
+            return np.where(pos, np.log(var * zt) * (0.5 / betac), -np.inf)
+        else:
+            return np.where(pos, np.power(var * zt, 0.5 / betac), 0.0)
 
     def price_step(self, spot, dt):
         """
