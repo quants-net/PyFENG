@@ -645,12 +645,14 @@ class SabrMcChoiHuKwok2026(SabrMcTimeDisc):
     def price(self, strike, spot, texp, cp=1):
         fwd = self.forward(spot, texp)
         df = np.exp(-self.intr * texp)
-        alpha, betac, rhoc, rho2, vovn = self._variables(fwd, texp)
+        alpha, betac, rhoc, rho2, _ = self._variables(fwd, texp)
+        # Simulation runs in normalized space (F̃ = F/fwd, starting at 1).
+        # The effective sigma_0 for the normalized process is alpha = sigma_0/fwd^betac.
 
         tobs = self.tobs(texp)
         dt_arr = np.diff(tobs, prepend=0)
 
-        sigma_t = np.full(self.n_path, 1.0)
+        sigma_t = np.full(self.n_path, alpha)
         fwd_t = np.full(self.n_path, 1.0)   # normalized: F_0/fwd = 1
         nz = np.ones(self.n_path, dtype=bool)  # True = path not yet absorbed
 
@@ -659,18 +661,18 @@ class SabrMcChoiHuKwok2026(SabrMcTimeDisc):
             if nz.any():
                 f = fwd_t[nz]
                 f_bc = f**betac
-                avgvar_I = sigma_t[nz]**2 * I_t[nz]  # scale by current sigma^2
 
-                # Rho-correlated shift — Eq. (16b):
-                #   F̄_t^h = F_t · exp( rho*alpha*sigma_t*(ratio-1) / (vov * F_t^{betac})
-                #                      - 0.5*rho^2*alpha^2*sigma_t^2*I_t*dt / F_t^{2*betac} )
+                # Rho-correlated shift — Eq. (16b) in normalised space.
+                # sigma_t tracks σ̃_t = σ_t / fwd^{β*}, starting at alpha.
+                #   F̃_t^h = F̃_t · exp( ρ·σ̃_t·(σ_ratio−1)/(ν·F̃_t^{β*})
+                #                      − ρ²·σ̃_t²·Ī·h/(2·F̃_t^{2β*}) )
                 fwd_bar = f * np.exp(
-                    self.rho * alpha * sigma_t[nz] * (sigma_ratio[nz] - 1) / (self.vov * f_bc)
-                    - 0.5 * self.rho**2 * alpha**2 * avgvar_I * dt / f_bc**2
+                    self.rho * sigma_t[nz] / f_bc * ((sigma_ratio[nz] - 1) / self.vov
+                    - 0.5 * self.rho * sigma_t[nz] * I_t[nz] * dt / f_bc)
                 )
                 # Rhoc residual — exact CEV step (Kang 2014), Eq. (16a):
-                #   var = (betac * rhoc * alpha)^2 * avgvar_I * dt
-                var = (betac * rhoc * alpha)**2 * avgvar_I * dt
+                #   var = (β* · ρ_c · σ̃_t)² · Ī · h
+                var = (betac * rhoc * sigma_t[nz])**2 * I_t[nz] * dt
                 new_f = CevMc._kang_step(fwd_bar, var, betac, self.rngs[5])
                 fwd_t[nz] = new_f
                 nz[nz] = new_f > 0   # mark newly absorbed paths
