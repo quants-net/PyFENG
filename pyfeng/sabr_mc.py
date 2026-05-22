@@ -16,11 +16,13 @@ from .cev import CevMc
 
 #### Use of RN generation spawn:
 # 0: vol step — normal (all classes via SabrMcABC.vol_step)
-# 2: average variance — normal/uniform (SabrMcTimeDisc: normal; SabrMcCai2017Exact: uniform)
+# 2: average variance — normal (avgvar_scheme=1,2); uniform (SabrMcCai2017Exact)
 # 5: asset price sampling — normal (draw_log_return, beta=1) / uniform (SabrMcCai2017Exact.simu_ST)
 
 @dataclass
 class SabrMcABC(sabr.SabrABC, CondMcBsmABC):
+
+    avgvar_scheme: int = 0
 
     def vol_step(self, dt, log=False):
         """
@@ -41,16 +43,57 @@ class SabrMcABC(sabr.SabrABC, CondMcBsmABC):
         else:
             return np.exp(vovn * (zz - vovn/2))
 
-    @abc.abstractmethod
+    def cond_states_step_trapez(self, dt):
+        """
+        avgvar_scheme=0: trapezoidal approximation I_t^h ≈ (1 + σ_ratio²) / 2.
+        """
+        sigma_ratio = self.vol_step(dt)
+        I_t = (1 + sigma_ratio**2) / 2.
+        return sigma_ratio, I_t
+
+    def cond_states_step_chen_2012(self, dt):
+        """
+        avgvar_scheme=1: moment-matched lognormal approximation (Chen 2012).
+        """
+        vovn = self.vov * np.sqrt(dt)
+        zhat = self.rv_normal(spawn=0) - vovn/2.
+        sigma_ratio = np.exp(vovn * zhat)
+
+        m1, var_scaled, skew, exkur = self.cond_avgvar_mvsk(vovn, zhat)
+        sig = np.sqrt(np.log1p(var_scaled))
+        I_t = m1 * np.exp(sig*(self.rv_normal(spawn=2) - sig/2.))
+
+        return sigma_ratio, I_t
+
+    def cond_states_step_choihukwok_2026(self, dt):
+        """
+        avgvar_scheme=2: moment-matched shifted lognormal (SLN) approximation
+        with fixed λ = 5/6 (Choi, Hu & Kwok 2026, Algorithm 1, Eq. 9).
+        """
+        vovn = self.vov * np.sqrt(dt)
+        sigma_ratio = self.vol_step(dt)
+        zhat = np.log(sigma_ratio) / vovn
+
+        mean_I, var_scaled, _, _ = self.cond_avgvar_mvsk(vovn, zhat)
+        sln = DistLognormal.from_mv(mean=mean_I, var_scaled=var_scaled, lam=5.0/6.0)
+        I_t = sln.draw(rng=self.rngs[2])
+
+        return sigma_ratio, I_t
+
     def cond_states_step(self, dt):
         """
         Sigma ratio and normalised average variance for one time step, assuming sigma_0 = 1.
+
+        Dispatches to the implementation selected by self.avgvar_scheme:
+            0 — trapezoidal (default)
+            1 — Chen (2012) lognormal
+            2 — Choi, Hu & Kwok (2026) shifted lognormal
 
         Because sigma evolves multiplicatively, all quantities scale out of sigma_0:
         the returned (sigma_ratio, I_t) are independent of the current level.
         The caller is responsible for scaling:
             sigma_new  = sigma_t * sigma_ratio
-            avgvar_inc = sigma_t**2 * I_t          (actual integrated variance / dt)
+            avgvar_inc = sigma_t**2 * I_t
 
         Args:
             dt: time step
@@ -58,7 +101,14 @@ class SabrMcABC(sabr.SabrABC, CondMcBsmABC):
         Returns:
             (sigma_ratio, I_t): sigma_{t+h}/sigma_t and normalised average variance I_t^h
         """
-        raise NotImplementedError
+        if self.avgvar_scheme == 0:
+            return self.cond_states_step_trapez(dt)
+        elif self.avgvar_scheme == 1:
+            return self.cond_states_step_chen_2012(dt)
+        elif self.avgvar_scheme == 2:
+            return self.cond_states_step_choihukwok_2026(dt)
+        else:
+            raise ValueError(f"Unknown avgvar_scheme: {self.avgvar_scheme}.")
 
     def draw_log_return(self, dt, sigma_0, sigma_t, avgvar):
         """
@@ -151,33 +201,6 @@ class SabrMcTimeDisc(SabrMcABC):
     Conditional MC for SABR model (beta=0,1 or rho=0) with conditional Monte-Carlo simulation
 
     """
-
-    scheme = 0
-
-    def cond_states_step_trapez(self, dt):
-        sigma_ratio = self.vol_step(dt)
-        I_t = (1 + sigma_ratio**2) / 2.
-        return sigma_ratio, I_t
-
-    def cond_states_step_chen_2012(self, dt):
-        vovn = self.vov * np.sqrt(dt)
-        zhat = self.rv_normal(spawn=0) - vovn/2.
-        sigma_ratio = np.exp(vovn * zhat)
-
-        m1, var_scaled, skew, exkur = self.cond_avgvar_mvsk(vovn, zhat)
-        sig = np.sqrt(np.log1p(var_scaled))
-        I_t = m1 * np.exp(sig*(self.rv_normal(spawn=2) - sig/2.))
-
-        return sigma_ratio, I_t
-
-    def cond_states_step(self, dt):
-        if self.scheme == 0:
-            return self.cond_states_step_trapez(dt)
-        elif self.scheme == 1:
-            return self.cond_states_step_chen_2012(dt)
-        else:
-            ValueError(f"Incorrect scheme: {self.scheme}.")
-
 
     def vol_paths(self, tobs, mu=0):
         """
@@ -606,34 +629,7 @@ class SabrMcChoiHuKwok2026(SabrMcABC):
           stochastic-alpha-beta-rho model.
     """
 
-    def cond_states_step(self, dt):
-        """
-        Steps 1 and 2: sample σ_{t+h}/σ_t and normalised I_t^h jointly, assuming σ_t = 1.
-
-        Args:
-            dt: time step h
-
-        Returns:
-            (sigma_ratio, I_t): σ_{t+h}/σ_t and normalised average variance I_t^h.
-            Caller scales: sigma_new = sigma_t * sigma_ratio,
-                           avgvar_inc = sigma_t**2 * I_t.
-        """
-        vovn = self.vov * np.sqrt(dt)
-
-        # Step 1: vol step (spawn=0) — returns ratio σ_{t+h}/σ_t
-        sigma_ratio = self.vol_step(dt)
-
-        # Ẑ = log(σ_{t+h}/σ_t) / (ν√h)  — paper Eq.(2)
-        zhat = np.log(sigma_ratio) / vovn
-
-        # Step 2: moments of I_t^h  (Proposition 2, via SabrABC.cond_avgvar_mvsk)
-        mean_I, var_scaled, _, _ = self.cond_avgvar_mvsk(vovn, zhat)
-
-        # SLN approximation with fixed λ = 5/6 (Algorithm 1, Eq. 9)
-        sln = DistLognormal.from_mv(mean=mean_I, var_scaled=var_scaled, lam=5.0/6.0)
-        I_t = sln.draw(rng=self.rngs[2])
-
-        return sigma_ratio, I_t
+    avgvar_scheme: int = 2
 
     def price(self, strike, spot, texp, cp=1):
         fwd = self.forward(spot, texp)
