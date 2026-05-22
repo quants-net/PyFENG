@@ -20,7 +20,7 @@ from .subord_bm import VarGammaQuad, ExpNigQuad
 # SABR/NSVh related models
 from .sabr import SabrHagan2002, SabrNormVolApprox, SabrLorig2017, SabrChoiWu2021H, SabrChoiWu2021P
 from .sabr_int import SabrUncorrChoiWu2021, SabrNormAnalytic, SabrNormEllipeInt, SabrMixtureChoi
-from .sabr_mc import SabrMcTimeDisc
+from .sabr_mc import SabrMcTimeDisc, SabrMcChoiHuKwok2026
 from .nsvh import Nsvh1, NsvhMc, NsvhGaussQuad
 
 # Other SV models

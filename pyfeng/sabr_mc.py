@@ -11,11 +11,13 @@ import scipy.integrate as scint
 from dataclasses import dataclass, field
 from . import sabr
 from .sv_abc import CondMcBsmABC
+from .disthelper import DistLognormal
+from .cev import CevMc
 
 #### Use of RN generation spawn:
-# 0: simulation of volatility (normal)
-# 2: integrated/average variance (lognormal)
-# 5: asset return
+# 0: vol step — normal (all classes via SabrMcABC.vol_step)
+# 2: average variance — normal/uniform (SabrMcTimeDisc: normal; SabrMcCai2017Exact: uniform)
+# 5: asset price sampling — normal (draw_log_return, beta=1) / uniform (SabrMcCai2017Exact.simu_ST)
 
 @dataclass
 class SabrMcABC(sabr.SabrABC, CondMcBsmABC):
@@ -40,17 +42,21 @@ class SabrMcABC(sabr.SabrABC, CondMcBsmABC):
             return np.exp(vovn * (zz - vovn/2))
 
     @abc.abstractmethod
-    def cond_states_step(self, dt, sigma_0):
+    def cond_states_step(self, dt):
         """
-        Final variance after dt and average variance over (0, dt) given sigma_0.
-        `sigma_0` should be an array of (self.n_path, )
+        Sigma ratio and normalised average variance for one time step, assuming sigma_0 = 1.
+
+        Because sigma evolves multiplicatively, all quantities scale out of sigma_0:
+        the returned (sigma_ratio, I_t) are independent of the current level.
+        The caller is responsible for scaling:
+            sigma_new  = sigma_t * sigma_ratio
+            avgvar_inc = sigma_t**2 * I_t          (actual integrated variance / dt)
 
         Args:
             dt: time step
-            sigma_0: initial volatility
 
         Returns:
-            (sigma after dt, average variance during dt)
+            (sigma_ratio, I_t): sigma_{t+h}/sigma_t and normalised average variance I_t^h
         """
         raise NotImplementedError
 
@@ -95,8 +101,9 @@ class SabrMcABC(sabr.SabrABC, CondMcBsmABC):
         avgvar = np.zeros(self.n_path)
 
         for i in range(n_dt):
-            sigma_t, avgvar_inc = self.cond_states_step(dt[i], sigma_t)
-            avgvar += avgvar_inc * dt[i]
+            sigma_ratio, I_t = self.cond_states_step(dt[i])
+            avgvar += sigma_t**2 * I_t * dt[i]
+            sigma_t *= sigma_ratio
 
         avgvar /= texp
 
@@ -147,35 +154,29 @@ class SabrMcTimeDisc(SabrMcABC):
 
     scheme = 0
 
-    def cond_states_step_trapez(self, dt, sigma_0):
-        sigma_t = sigma_0 * self.vol_step(dt)
-        avgvar = (sigma_0**2 + sigma_t**2) / 2.
+    def cond_states_step_trapez(self, dt):
+        sigma_ratio = self.vol_step(dt)
+        I_t = (1 + sigma_ratio**2) / 2.
+        return sigma_ratio, I_t
 
-        return sigma_t, avgvar
-
-    def cond_states_step_chen_2012(self, dt, sigma_0):
-
+    def cond_states_step_chen_2012(self, dt):
         vovn = self.vov * np.sqrt(dt)
         zhat = self.rv_normal(spawn=0) - vovn/2.
-        sigma_t = sigma_0 * np.exp(vovn * zhat)
+        sigma_ratio = np.exp(vovn * zhat)
 
         m1, var_scaled, skew, exkur = self.cond_avgvar_mvsk(vovn, zhat)
         sig = np.sqrt(np.log1p(var_scaled))
-        avgvar = sigma_0**2 * m1 * np.exp(sig*(self.rv_normal(spawn=2) - sig/2.))
+        I_t = m1 * np.exp(sig*(self.rv_normal(spawn=2) - sig/2.))
 
-        return sigma_t, avgvar
+        return sigma_ratio, I_t
 
-    def cond_states_step(self, dt, sigma_0):
-        sigma_t = self.vol_step(dt)
-
+    def cond_states_step(self, dt):
         if self.scheme == 0:
-            sigma_t, avgvar = self.cond_states_step_trapez(dt, sigma_0)
+            return self.cond_states_step_trapez(dt)
         elif self.scheme == 1:
-            sigma_t, avgvar = self.cond_states_step_chen_2012(dt, sigma_0)
+            return self.cond_states_step_chen_2012(dt)
         else:
             ValueError(f"Incorrect scheme: {self.scheme}.")
-
-        return sigma_t, avgvar
 
 
     def vol_paths(self, tobs, mu=0):
@@ -420,13 +421,10 @@ class SabrMcCai2017Exact(SabrMcABC):
         """
         return avgvar
 
-    def cond_states_step(self, dt, sigma_0):
-
-        sigma_t = self.vol_step(dt)  ## ratio
-        avgvar = sigma_0**2 * self.draw_cond_avgvar(dt, sigma_t)
-        sigma_t *= sigma_0
-
-        return sigma_t, avgvar
+    def cond_states_step(self, dt):
+        sigma_ratio = self.vol_step(dt)  ## ratio
+        I_t = self.draw_cond_avgvar(dt, sigma_ratio)
+        return sigma_ratio, I_t
 
     # The algorithem below is about pricing when 0<=beta<1
     def simu_ST(self, beta, VT, spot):
@@ -443,7 +441,7 @@ class SabrMcCai2017Exact(SabrMcABC):
         cdf of a central chi2 distribution with x=A0, degree of freedom = 1/(1 - beta)
         '''
 
-        u_lst = self.rv_uniform(spawn=3)
+        u_lst = self.rv_uniform(spawn=5)
         forward_ls = np.zeros(self.n_path)
 
         for i in range(self.n_path):
@@ -575,6 +573,107 @@ class SabrMcCai2017Exact(SabrMcABC):
                                   + 2 * theta_s(s) / sigma)
             cdf = spst.norm._cdf(z)
         return cdf
+
+    def return_var_realized(self, texp, cond):
+        return None
+
+
+@dataclass
+class SabrMcChoiHuKwok2026(SabrMcABC):
+    """
+    Choi, Hu & Kwok (2026) simulation scheme for the SABR model.
+
+    Two-step simulation per time step h (Algorithm 4 of the paper):
+
+    Step 1 — vol step: σ_{t+h} = σ_t · exp(ν√h · Ẑ),  Ẑ ~ N(-ν√h/2, 1).
+             Reuses SabrMcABC.vol_step (spawn=0).
+
+    Step 2 — conditional average variance I_t^h: moment-matched shifted lognormal
+             (SLN) approximation with fixed λ = 5/6 (Algorithm 1, Eq. 9).
+             Moments from SabrABC.cond_avgvar_mvsk (Proposition 2).
+             Samples via DistLognormal (spawn=2).
+
+    Step 3 — conditional forward price F_{t+h}: CEV approximation (Algorithm 2).
+             The conditional mean F̄_t^h (Eq. 16b) and variance ρ_*²·σ_t²·h·I_t^h
+             are passed to the parent cond_spot_sigma + base_model pipeline,
+             which prices the conditional CEV distribution analytically via Cev.price.
+
+    All β values (including β ∈ {0, 1}) are handled by the parent price() once
+    cond_states_step is provided.
+
+    References:
+        - Choi J, Hu L, Kwok YK (2026) Efficient and accurate simulation of the
+          stochastic-alpha-beta-rho model.
+    """
+
+    def cond_states_step(self, dt):
+        """
+        Steps 1 and 2: sample σ_{t+h}/σ_t and normalised I_t^h jointly, assuming σ_t = 1.
+
+        Args:
+            dt: time step h
+
+        Returns:
+            (sigma_ratio, I_t): σ_{t+h}/σ_t and normalised average variance I_t^h.
+            Caller scales: sigma_new = sigma_t * sigma_ratio,
+                           avgvar_inc = sigma_t**2 * I_t.
+        """
+        vovn = self.vov * np.sqrt(dt)
+
+        # Step 1: vol step (spawn=0) — returns ratio σ_{t+h}/σ_t
+        sigma_ratio = self.vol_step(dt)
+
+        # Ẑ = log(σ_{t+h}/σ_t) / (ν√h)  — paper Eq.(2)
+        zhat = np.log(sigma_ratio) / vovn
+
+        # Step 2: moments of I_t^h  (Proposition 2, via SabrABC.cond_avgvar_mvsk)
+        mean_I, var_scaled, _, _ = self.cond_avgvar_mvsk(vovn, zhat)
+
+        # SLN approximation with fixed λ = 5/6 (Algorithm 1, Eq. 9)
+        sln = DistLognormal.from_mv(mean=mean_I, var_scaled=var_scaled, lam=5.0/6.0)
+        I_t = sln.draw(rng=self.rngs[2])
+
+        return sigma_ratio, I_t
+
+    def price(self, strike, spot, texp, cp=1):
+        fwd = self.forward(spot, texp)
+        df = np.exp(-self.intr * texp)
+        alpha, betac, rhoc, rho2, vovn = self._variables(fwd, texp)
+
+        tobs = self.tobs(texp)
+        dt_arr = np.diff(tobs, prepend=0)
+
+        sigma_t = np.full(self.n_path, 1.0)
+        fwd_t = np.full(self.n_path, 1.0)   # normalized: F_0/fwd = 1
+        nz = np.ones(self.n_path, dtype=bool)  # True = path not yet absorbed
+
+        for dt in dt_arr:
+            sigma_ratio, I_t = self.cond_states_step(dt)
+            if nz.any():
+                f = fwd_t[nz]
+                f_bc = f**betac
+                avgvar_I = sigma_t[nz]**2 * I_t[nz]  # scale by current sigma^2
+
+                # Rho-correlated shift — Eq. (16b):
+                #   F̄_t^h = F_t · exp( rho*alpha*sigma_t*(ratio-1) / (vov * F_t^{betac})
+                #                      - 0.5*rho^2*alpha^2*sigma_t^2*I_t*dt / F_t^{2*betac} )
+                fwd_bar = f * np.exp(
+                    self.rho * alpha * sigma_t[nz] * (sigma_ratio[nz] - 1) / (self.vov * f_bc)
+                    - 0.5 * self.rho**2 * alpha**2 * avgvar_I * dt / f_bc**2
+                )
+                # Rhoc residual — exact CEV step (Kang 2014), Eq. (16a):
+                #   var = (betac * rhoc * alpha)^2 * avgvar_I * dt
+                var = (betac * rhoc * alpha)**2 * avgvar_I * dt
+                new_f = CevMc._kang_step(fwd_bar, var, betac, self.rngs[5])
+                fwd_t[nz] = new_f
+                nz[nz] = new_f > 0   # mark newly absorbed paths
+            sigma_t *= sigma_ratio
+
+        kk = np.atleast_1d(strike) / fwd
+        scalar_output = np.ndim(strike) == 0
+        payoff = np.mean(np.fmax(cp * (fwd_t - kk[:, None]), 0), axis=1)
+        price = df * fwd * payoff
+        return price.item() if scalar_output else price
 
     def return_var_realized(self, texp, cond):
         return None

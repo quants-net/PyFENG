@@ -165,17 +165,23 @@ class DistLognormal:
         Draw random samples from the shifted lognormal distribution.
 
         Distribution parameters (sig, mu, lam) may be numpy arrays and are
-        broadcast against the generated standard-normal draws.
+        broadcast against the standard-normal draws.
 
         Args:
-            n_sample: number of samples (int or shape tuple passed to standard_normal)
-            rng: numpy Generator (e.g. np.random.default_rng(seed)). If None, a fresh one is created.
+            n_sample: number of samples (int or shape tuple). When None and
+                      parameters are arrays, the draw size is inferred from the
+                      broadcast shape of the parameters so that one sample is
+                      produced per parameter element.
+            rng: numpy Generator (e.g. np.random.default_rng(seed)). If None, a
+                 fresh one is created.
 
         Returns:
-            array of shape (*param_broadcast_shape, n_sample)
+            array broadcast from parameter shapes and draw size.
         """
         if rng is None:
             rng = np.random.default_rng()
+        if n_sample is None:
+            n_sample = np.broadcast_shapes(np.shape(self.sig), np.shape(self.mu), np.shape(self.lam)) or None
         z = rng.standard_normal(n_sample)
         return self.mu * (1 - self.lam + self.lam * np.exp(self.sig * z - 0.5 * self.sig**2))
 

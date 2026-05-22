@@ -349,6 +349,42 @@ class CevMc(CevParams, OptABC):
         return self
 
 
+    @staticmethod
+    def _kang_step(spot, var, betac, rng):
+        """
+        One Kang (2014) exact CEV step for a batch of paths.
+
+        Samples the next price from the non-central chi-squared distribution
+        that characterises the CEV transition density (Algorithm 3 of Kang 2014).
+        Paths with spot ≤ 0, or whose Poisson parameter is non-positive, are
+        absorbed at zero.
+
+        Args:
+            spot: current (growth-adjusted) prices, shape (n_path,)
+            var:  effective variance (betac · sigma_eff)² · t_eff,
+                  scalar or shape (n_path,) for path-dependent vol
+            betac: 1 − beta
+            rng:  numpy Generator for the three draws (Gamma, Poisson, Gamma)
+
+        Returns:
+            next prices, shape (n_path,)
+
+        References:
+            - Kang C (2014) Simulation of the Shifted Poisson Distribution with
+              an Application to the CEV Model. Management Science and Financial
+              Engineering 20:27–32. https://doi.org/10.7737/MSFE.2014.20.1.027
+        """
+        n = len(spot)
+        z0 = np.where(spot > 0.0, np.power(np.maximum(spot, 0.0), 2.0 * betac) / var, 0.0)
+        rv_gam = 2.0 * rng.standard_gamma(0.5 / betac, size=n)
+        pois_lam = (z0 - rv_gam) / 2.0
+
+        pos = pois_lam > 0.0
+        n_pois = np.zeros(n, dtype=int)
+        n_pois[pos] = rng.poisson(pois_lam[pos])
+        zt = 2.0 * rng.standard_gamma(n_pois + 1.0)
+        return np.where(pos, np.power(var * zt, 0.5 / betac), 0.0)
+
     def price_step(self, spot, dt):
         """
         Simulated asset price after dt given the current price `spot` using the Algorithm 3 of Kang (2014)
@@ -363,28 +399,10 @@ class CevMc(CevParams, OptABC):
         References:
             - Kang C (2014) Simulation of the Shifted Poisson Distribution with an Application to the CEV Model. Management Science and Financial Engineering 20:27–32. https://doi.org/10.7737/MSFE.2014.20.1.027
         """
-
-        nz_idx = (spot > 0.0)
-        s_t = np.exp((self.intr - self.divr)*dt) * spot
+        s_t = np.exp((self.intr - self.divr) * dt) * spot
         betac = 1.0 - self.beta
-
-        var = (betac * self.sigma)**2 * dt * spsp.exprel(2*(self.intr-self.divr)*betac*dt)
-        z0 = np.power(s_t[nz_idx], 2*betac) / var
-        rv_gam = 2 * self.rngs[0].standard_gamma(1/(2*betac), size=len(z0))
-        pois_lam = (z0 - rv_gam) / 2
-
-        # index for negative poisson value so that s_t becomes zero in this step
-        neg_idx = (pois_lam <= 0)
-
-        if np.any(neg_idx):
-            pois_lam = pois_lam[~neg_idx]  # positive only
-            tmp_idx = np.where(nz_idx)[0][neg_idx]
-            nz_idx[tmp_idx] = False
-            s_t[~nz_idx] = 0.0
-
-        zt = 2 * self.rngs[0].standard_gamma(self.rngs[0].poisson(pois_lam) + 1)
-        s_t[nz_idx] = np.power(var * zt, 1/(2*betac))
-        return s_t
+        var = (betac * self.sigma)**2 * dt * spsp.exprel(2 * (self.intr - self.divr) * betac * dt)
+        return CevMc._kang_step(s_t, var, betac, self.rngs[0])
 
     def mass_zero(self, spot, texp, log=False):
 
