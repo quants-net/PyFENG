@@ -15,12 +15,21 @@ from .disthelper import DistLognormal
 from .cev import CevMc
 
 #### Use of RN generation spawn:
-# 0: vol step — normal (all classes via SabrMcABC.vol_step)
+# 0: vol step — normal (all classes via SabrMcTimeDisc.vol_step)
 # 2: average variance — normal (avgvar_scheme=1,2); uniform (SabrMcCai2017Exact)
 # 5: asset price sampling — normal (draw_log_return, beta=1) / uniform (SabrMcCai2017Exact.simu_ST)
 
 @dataclass
-class SabrMcABC(sabr.SabrABC, CondMcBsmABC):
+class SabrMcTimeDisc(sabr.SabrABC, CondMcBsmABC):
+    """
+    SABR Monte Carlo pricer with time-step discretization of the vol process.
+
+    Supports three avgvar_scheme options for the conditional average variance:
+        0 — trapezoidal approximation (default)
+        1 — Chen (2012) moment-matched lognormal
+        2 — Choi, Hu & Kwok (2026) moment-matched shifted lognormal
+
+    """
 
     avgvar_scheme: int = 0
 
@@ -51,34 +60,41 @@ class SabrMcABC(sabr.SabrABC, CondMcBsmABC):
         I_t = (1 + sigma_ratio**2) / 2.
         return sigma_ratio, I_t
 
-    def cond_states_step_chen_2012(self, dt):
+    def cond_states_step_chen2012(self, dt):
         """
         avgvar_scheme=1: moment-matched lognormal approximation (Chen 2012).
+        Equivalent to avgvar_scheme=2 with lam=1 (no shift).
         """
         vovn = self.vov * np.sqrt(dt)
-        zhat = self.rv_normal(spawn=0) - vovn/2.
-        sigma_ratio = np.exp(vovn * zhat)
+        log_ratio = self.vol_step(dt, log=True)
+        zhat = log_ratio / vovn
 
-        m1, var_scaled, skew, exkur = self.cond_avgvar_mvsk(vovn, zhat)
-        sig = np.sqrt(np.log1p(var_scaled))
-        I_t = m1 * np.exp(sig*(self.rv_normal(spawn=2) - sig/2.))
+        mean_I, var_scaled, _, _ = self.cond_avgvar_mvsk(vovn, zhat)
+        sln = DistLognormal.from_mv(mean=mean_I, var_scaled=var_scaled, lam=1.0)
+        I_t = sln.draw(rng=self.rngs[2])
 
-        return sigma_ratio, I_t
+        return np.exp(log_ratio), I_t
 
-    def cond_states_step_choihukwok_2026(self, dt):
+    def cond_states_step_choihukwok2026(self, dt):
         """
         avgvar_scheme=2: moment-matched shifted lognormal (SLN) approximation
         with fixed λ = 5/6 (Choi, Hu & Kwok 2026, Algorithm 1, Eq. 9).
         """
         vovn = self.vov * np.sqrt(dt)
-        sigma_ratio = self.vol_step(dt)
-        zhat = np.log(sigma_ratio) / vovn
+        log_ratio = self.vol_step(dt, log=True)
+        zhat = log_ratio / vovn
 
         mean_I, var_scaled, _, _ = self.cond_avgvar_mvsk(vovn, zhat)
         sln = DistLognormal.from_mv(mean=mean_I, var_scaled=var_scaled, lam=5.0/6.0)
         I_t = sln.draw(rng=self.rngs[2])
 
-        return sigma_ratio, I_t
+        return np.exp(log_ratio), I_t
+
+    _AVGVAR_SCHEMES = {
+        0: cond_states_step_trapez,
+        1: cond_states_step_chen2012,
+        2: cond_states_step_choihukwok2026,
+    }
 
     def cond_states_step(self, dt):
         """
@@ -101,13 +117,9 @@ class SabrMcABC(sabr.SabrABC, CondMcBsmABC):
         Returns:
             (sigma_ratio, I_t): sigma_{t+h}/sigma_t and normalised average variance I_t^h
         """
-        if self.avgvar_scheme == 0:
-            return self.cond_states_step_trapez(dt)
-        elif self.avgvar_scheme == 1:
-            return self.cond_states_step_chen_2012(dt)
-        elif self.avgvar_scheme == 2:
-            return self.cond_states_step_choihukwok_2026(dt)
-        else:
+        try:
+            return self._AVGVAR_SCHEMES[self.avgvar_scheme](self, dt)
+        except KeyError:
             raise ValueError(f"Unknown avgvar_scheme: {self.avgvar_scheme}.")
 
     def draw_log_return(self, dt, sigma_0, sigma_t, avgvar):
@@ -193,14 +205,6 @@ class SabrMcABC(sabr.SabrABC, CondMcBsmABC):
         price = fwd * np.sum(price_vec, axis=0) / self.n_path
 
         return price
-
-
-@dataclass
-class SabrMcTimeDisc(SabrMcABC):
-    """
-    Conditional MC for SABR model (beta=0,1 or rho=0) with conditional Monte-Carlo simulation
-
-    """
 
     def vol_paths(self, tobs, mu=0):
         """
@@ -293,7 +297,7 @@ class SabrMcTimeDisc(SabrMcABC):
 
 
 @dataclass
-class SabrMcCai2017Exact(SabrMcABC):
+class SabrMcCai2017Exact(SabrMcTimeDisc):
     """
     Cai et al. (2017)'s exact simulation of the SABR model
 
@@ -602,14 +606,14 @@ class SabrMcCai2017Exact(SabrMcABC):
 
 
 @dataclass
-class SabrMcChoiHuKwok2026(SabrMcABC):
+class SabrMcChoiHuKwok2026(SabrMcTimeDisc):
     """
     Choi, Hu & Kwok (2026) simulation scheme for the SABR model.
 
     Two-step simulation per time step h (Algorithm 4 of the paper):
 
     Step 1 — vol step: σ_{t+h} = σ_t · exp(ν√h · Ẑ),  Ẑ ~ N(-ν√h/2, 1).
-             Reuses SabrMcABC.vol_step (spawn=0).
+             Reuses SabrMcTimeDisc.vol_step (spawn=0).
 
     Step 2 — conditional average variance I_t^h: moment-matched shifted lognormal
              (SLN) approximation with fixed λ = 5/6 (Algorithm 1, Eq. 9).
