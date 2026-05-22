@@ -304,18 +304,24 @@ class DistGamma:
         """
         Draw random samples from the Gamma distribution.
 
-        Distribution parameters (shape, rate) may be numpy arrays; numpy
-        broadcasts them against size and raises if they are inconsistent.
+        Distribution parameters (shape, rate) may be numpy arrays and are
+        broadcast against the standard-gamma draws.
 
         Args:
-            n_sample: number of samples (int or shape tuple passed to standard_gamma)
-            rng: numpy Generator (e.g. np.random.default_rng(seed)). If None, a fresh one is created.
+            n_sample: number of samples (int or shape tuple). When None and
+                      parameters are arrays, the draw size is inferred from the
+                      broadcast shape of the parameters so that one sample is
+                      produced per parameter element.
+            rng: numpy Generator (e.g. np.random.default_rng(seed)). If None, a
+                 fresh one is created.
 
         Returns:
-            array of shape (*param_broadcast_shape, n_sample)
+            array broadcast from parameter shapes and draw size.
         """
         if rng is None:
             rng = np.random.default_rng()
+        if n_sample is None:
+            n_sample = np.broadcast_shapes(np.shape(self.shape), np.shape(self.rate)) or None
         return rng.standard_gamma(self.shape, size=n_sample) / self.rate
 
 
@@ -474,18 +480,24 @@ class DistInvGauss:
         """
         Draw random samples from the Inverse Gaussian distribution.
 
-        Distribution parameters (mu, lam) may be numpy arrays; numpy
-        broadcasts them against size and raises if they are inconsistent.
+        Distribution parameters (mu, lam) may be numpy arrays and are
+        broadcast against the wald draws.
 
         Args:
-            n_sample: number of samples (int or shape tuple passed to wald)
-            rng: numpy Generator (e.g. np.random.default_rng(seed)). If None, a fresh one is created.
+            n_sample: number of samples (int or shape tuple). When None and
+                      parameters are arrays, the draw size is inferred from the
+                      broadcast shape of the parameters so that one sample is
+                      produced per parameter element.
+            rng: numpy Generator (e.g. np.random.default_rng(seed)). If None, a
+                 fresh one is created.
 
         Returns:
-            array of shape (*param_broadcast_shape, n_sample)
+            array broadcast from parameter shapes and draw size.
         """
         if rng is None:
             rng = np.random.default_rng()
+        if n_sample is None:
+            n_sample = np.broadcast_shapes(np.shape(self.mu), np.shape(self.lam)) or None
         return rng.wald(self.mu, self.lam, size=n_sample)
 
 
