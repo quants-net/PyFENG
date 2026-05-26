@@ -6,11 +6,11 @@ Created on Tue Sep 19 22:56:58 2017
 
 import numpy as np
 import scipy.stats as spst
+import mathpf
 
 from . import bsm
 from .opt_abc import OptAnalyticABC
 from .params import NormParams
-from .util import MathFuncs, MathConsts
 
 
 class Norm(NormParams, OptAnalyticABC):
@@ -90,29 +90,30 @@ class Norm(NormParams, OptAnalyticABC):
         return price
 
     @staticmethod
-    def price_vega_std(sigma, k, price=False):
+    def price_std(sigma, k, type=1):
         """
-        Price-to-vega ratio for standardized option (cp=1, texp=1, fwd=0)
+        Price (ratio) for the standardized normal (Bachelier) option (cp=1, texp=1, fwd=0).
+
+        With m0 = k/sigma and Mills ratio R(x) = N(-x)/n(x):
+            type=1:  price-to-vega ratio = sigma * (-R'(m0))   (default)
+            type=0:  price               = vega * (price-to-vega ratio)
+            type=-1: vega                = n(m0)
 
         Args:
             sigma: sigma * sqrt(t), standard deviation
-            k: strike
-            price: multiply vega so return price if True. False by default
+            k: strike (moneyness, fwd = 0); requires k >= 0 (m0 >= 0)
+            type: 1 for price-to-vega (default), 0 for price, -1 for vega
 
         Returns:
-
+            the requested standardized value
         """
-        m_d = k / sigma  # -d (minus d)
-        p = sigma*(1. - m_d * MathFuncs.mills_ratio(m_d))
-        ## Use expansion for very large m_cp_d based on A&S 26.2.13
-        ## But, it is not so necessary
-        #idx = (m_d > 1e3)
-        #m_d_sq = m_d[idx]**2
-        #ratio[idx] = 1./(m_d_sq + 2.)*(1. - 1./(m_d_sq + 4.)*(1 - 5/(m_d_sq + 6.)))
-
-        if price:
-            p *= spst.norm._pdf(m_d)
-
+        m0 = k / sigma
+        if type == -1:
+            return spst.norm._pdf(m0)
+        # 1 - m0 R(m0) = -R'(m0), computed cancellation-free (no large-m0 loss)
+        p = sigma * mathpf.millsratio_d1(m0)
+        if type == 0:
+            p *= spst.norm._pdf(m0)
         return p
 
 
