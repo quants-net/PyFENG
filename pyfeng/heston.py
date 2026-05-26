@@ -448,8 +448,8 @@ class HestonUncorrBallRoma1994(HestonABC):
         price = m_bs.price(strike, spot, texp, cp)
 
         if self.order >= 2:
-            price += 0.5*var*m_bs.d2_var(strike, spot, texp, cp)
+            price += 0.5*var*m_bs.var_d2(strike, spot, texp, cp)
         if self.order >= 3:
-            price += (1/6)*c3*m_bs.d3_var(strike, spot, texp, cp)
+            price += (1/6)*c3*m_bs.var_d3(strike, spot, texp, cp)
 
         return price

@@ -21,11 +21,12 @@ classifiers = [
     "Intended Audience :: Financial and Insurance Industry",
     "Intended Audience :: Science/Research",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "scipy",
     "pandas",
+    "mathpf>=0.4.1",
 ]
 
 [project.urls]

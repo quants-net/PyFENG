@@ -1,10 +1,11 @@
 import numpy as np
 import scipy.stats as spst
+import mathpf
 import warnings
 
 from .opt_abc import OptABC, OptAnalyticABC
 from .params import BsmParams
-from .util import MathFuncs, MathConsts
+from .util import MathConsts
 from .disthelper import DistLognormal
 
 class Bsm(BsmParams, OptAnalyticABC):
@@ -66,7 +67,7 @@ class Bsm(BsmParams, OptAnalyticABC):
         return sig
 
     @staticmethod
-    def price_std(sigma, logk, sign=1, type=1):
+    def price_std(sigma, logk, theta=1, type=1):
         """
         Price (ratio) for standardized parameters
 
@@ -75,8 +76,8 @@ class Bsm(BsmParams, OptAnalyticABC):
         where R(x) = N(-x)/n(x) is Mills ratio
 
         type=1: Price-to-vega ratio
-            Option Price / Vega = [N(d1) - k N(d2)]/n(d1) = R(-d1) - R(-d2) for sign = 1
-            (1 - Option Price) / Vega = [1 - N(d1) + k N(d2)]/n(d1) = R(d1) + R(-d2) for sign = -1
+            Option Price / Vega = [N(d1) - k N(d2)]/n(d1) = R(-d1) - R(-d2) for theta = 1
+            (1 - Option Price) / Vega = [1 - N(d1) + k N(d2)]/n(d1) = R(d1) + R(-d2) for theta = -1
 
         type=-1: Vega = n(d1)
 
@@ -88,7 +89,7 @@ class Bsm(BsmParams, OptAnalyticABC):
         Args:
             sigma: volatility
             logk: log strike
-            sign: -1 for complementary price. +1 by default
+            theta: -1 for complementary price. +1 by default
             type: 0 for price, 1 for price-to-vega (default), -1 for vega, 2 for price-to-delta
 
         References:
@@ -97,40 +98,40 @@ class Bsm(BsmParams, OptAnalyticABC):
         Returns:
             scaled price (ratio) value
         """
-        # don't directly compute d1 just in case sigma_std is infty
-        # handle the case logk = sigma = 0 (ATM)
+        # m0 = logk/sigma (as in bsiv.py); computed carefully since sigma may be 0/inf
+        # and logk = sigma = 0 is the ATM case.  d1 = -m0 + sigma/2,  d2 = -m0 - sigma/2.
         sh = np.broadcast_shapes(np.shape(logk), np.shape(sigma))
         sigma = np.broadcast_to(sigma, shape=sh)
-        d0 = np.full(sh, fill_value=-logk)
-        np.divide(d0, sigma, out=d0, where=(d0 != 0.0))
+        m0 = np.full(sh, fill_value=logk, dtype=float)
+        np.divide(m0, sigma, out=m0, where=(m0 != 0.0))
 
         if type == -1:
-            return spst.norm._pdf(d0 + sigma/2.)
+            return spst.norm._pdf(-m0 + sigma/2.)
 
-        R_left = MathFuncs.mills_ratio(-sign * (d0 + 0.5*sigma))
-        rv = R_left - sign*MathFuncs.mills_ratio(-d0 + 0.5*sigma)
+        R_left = mathpf.millsratio(theta * (m0 - 0.5*sigma))     # R(-d1) for theta=1
+        rv = R_left - theta*mathpf.millsratio(m0 + 0.5*sigma)    # - R(-d2)
 
-        ## Correct pv values for very small sigma/d0
-        idx = (sigma > 0.0) & (sigma/np.fmax(1.0, -d0) < 1e-3) & (sign > 0)
+        ## Small sigma: R(m0-t) - R(m0+t) cancels -> Taylor in sigma (R'''-seeded; cf. bsiv.p2v_sig).
+        ## The cutoff sigma < 0.037*(1.25 + m0) balances the Taylor truncation against the direct-
+        ## difference cancellation; outside it the direct R_left - R_right (above) is accurate.  (The
+        ## deep-OTM 1/(x^2+3) asymptotic branch of p2v_sig is omitted -- the Taylor covers all m0.)
+        idx = (sigma > 0.0) & (theta > 0) & (sigma < 3.7e-2*(1.25 + m0))
         if np.any(idx):
-            sig_idx = sigma[idx]
-            d0_idx = d0[idx]
-            # Mills ratio derivative:
-            # R'(x) = x R(x) - 1
-            # -R'(-x) = x R(-x) + 1
-            # R'''(x) = x(x^2 + 3) R(x) - (x^2 + 2) = (x^2 + 3) R'(x) + 1
-            # -R'''(-x) = (x^2 + 3) -R'(-x) - 1
-
-            R_d1 = 1. + d0_idx * MathFuncs.mills_ratio(-d0_idx)
-            # when d0_idx is large negative
-            # R_d1 = 1./(d0_idx**2 + 2.)*(1. - 1./(d0_idx**2 + 4.)*(1. - 5./(d0_idx**2 + 6.))),
-
-            R_d3 = (d0_idx**2 + 3.)*R_d1 - 1.
-            # next term is sig_idx**4/1920 * R_d5
-            rv[idx] = (R_d1 + sig_idx**2/24.*R_d3)*sig_idx
+            sig = sigma[idx]
+            m0i = m0[idx]
+            m0sq = m0i*m0i
+            # [R(m0-t) - R(m0+t)]/sigma = -R'(m0) + sigma^2/24*(-R''') + ... ,  t = sigma/2.  Seed
+            # -R'''(m0) directly (cancellation-free), DESCEND to -R'(m0) = (-R'''(m0)+1)/(m0^2+3),
+            # then ASCEND to -R^(5), -R^(7) via R^(2k+1) = (x^2+4k-1) R^(2k-1) - (2k-1)(2k-2) R^(2k-3).
+            Rx_d3 = mathpf.millsratio_d3(m0i)               # -R'''(m0)
+            Rx_d1 = (Rx_d3 + 1.0) / (m0sq + 3.0)            # -R'(m0)
+            Rx_d5 = (m0sq + 7.0)*Rx_d3 - 6.0*Rx_d1          # -R^(5)(m0)
+            Rx_d7 = (m0sq + 11.0)*Rx_d5 - 20.0*Rx_d3        # -R^(7)(m0)
+            s2 = sig*sig
+            rv[idx] = sig*(Rx_d1 + s2*(Rx_d3/24.0 + s2*(Rx_d5/1920.0 + s2*Rx_d7/322560.0)))
 
         if type == 0:  # price
-            rv *= spst.norm._pdf(d0 + sigma/2.)
+            rv *= spst.norm._pdf(-m0 + sigma/2.)
         elif type == 2:  # price-to-delta
             rv /= R_left
 
@@ -148,7 +149,7 @@ class Bsm(BsmParams, OptAnalyticABC):
         vega = df*fwd*spst.norm._pdf(d1)*np.sqrt(texp)
         return vega
 
-    def vega2(self, strike, spot, texp, cp=1):
+    def vega_d2(self, strike, spot, texp, cp=1):
         """
         Second derivative w.r.t. sigma.
 
@@ -169,11 +170,11 @@ class Bsm(BsmParams, OptAnalyticABC):
         d1 += 0.5*sigma_std
 
         # formula according to wikipedia
-        vega2 = df*fwd*spst.norm._pdf(d1)*np.sqrt(texp) * d1*d2/sigma_std
-        return vega2
+        vega_d2 = df*fwd*spst.norm._pdf(d1)*np.sqrt(texp) * d1*d2/sigma_std
+        return vega_d2
 
 
-    def d2_var(self, strike, spot, texp, cp=1):
+    def var_d2(self, strike, spot, texp, cp=1):
         """
         2nd derivative w.r.t. variance (=sigma^2)
         Eq. (9) in Hull & White (1987)
@@ -200,7 +201,7 @@ class Bsm(BsmParams, OptAnalyticABC):
 
         return risk
 
-    def d3_var(self, strike, spot, texp, cp=1):
+    def var_d3(self, strike, spot, texp, cp=1):
         """
         3rd derivative w.r.t. variance (=sigma^2)
         Eq. (9) in Hull & White (1987)

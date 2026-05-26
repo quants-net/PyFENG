@@ -5,8 +5,8 @@ from . import sabr
 import scipy.special as spsp
 import scipy.stats as spst
 import scipy.integrate as spint
+import mathpf
 from .opt_abc import MassZeroABC
-from .util import MathFuncs
 from .disthelper import DistLognormal
 
 
@@ -213,7 +213,7 @@ class SabrNormAnalytic(sabr.SabrABC):
         A = 0.75*tmp1
         B = 0.75*(tmp2 - 5/16*tmp1**2)
 
-        R = MathFuncs.mills_ratio(np.array([u0 - xi, u0, u0 + xi]))
+        R = mathpf.millsratio(np.array([u0 - xi, u0, u0 + xi]))
         opt_val = ((R[0] - R[2]) + A*(R[0] + R[2] - 2*R[1]) + 2*B*(R[0] - R[2] - 2*xi*(1. - u0*R[1]))) / xi
         # At the end of above, n(u0)/xi should be multiplied. Only /xi is multiplied and n(u0) will be applied later.
 
@@ -232,7 +232,7 @@ class SabrNormAnalytic(sabr.SabrABC):
             v_p = self.rho*k + rhoc2*ch + diff
             V = np.sqrt(k**2 + rhoc2)
             fn = (2/np.pi)*np.sqrt(v_p/V)*spsp.ellipe(np.fmin(2*diff/v_p, 1.0)) - 1. - xi*(uu - u0)*(A + B*xi*(uu - u0))
-            base = MathFuncs.mills_ratio(uu + xi) + MathFuncs.mills_ratio(uu - xi)
+            base = mathpf.millsratio(uu + xi) + mathpf.millsratio(uu - xi)
             opt_val += np.sum(fn*base*v_weight, axis=0)
 
         opt_val *= 0.5*self.sigma*np.sqrt(texp*V)*np.exp(-0.5*xi**2) * spst.norm._pdf(u0)
@@ -331,7 +331,7 @@ class SabrNormEllipeInt(sabr.SabrABC):
 
         def integrand(uu_, xi_, k_):
             rv = self.hh_xi(uu_, k_, xi_, self.rho)
-            rv *= spst.norm._pdf(uu_)*(MathFuncs.mills_ratio(uu_ + xi_) + MathFuncs.mills_ratio(uu_ - xi_))
+            rv *= spst.norm._pdf(uu_)*(mathpf.millsratio(uu_ + xi_) + mathpf.millsratio(uu_ - xi_))
             return rv
 
         def integral(u0_, xi_, k_):

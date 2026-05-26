@@ -1,7 +1,6 @@
 import warnings
 
 import numpy as np
-import scipy.special as spsp
 from statsmodels.stats.moment_helpers import cum2mc
 
 class MathConsts:
@@ -33,19 +32,6 @@ class MathConsts:
 
 
 class MathFuncs:
-
-    @staticmethod
-    def mills_ratio(x):
-        """
-        Mills Ratio: R(x) = N(-x)/n(x) = sqrt(pi/2) erfcx(x/sqrt(2))
-
-        Args:
-            x: argument
-
-        Returns:
-
-        """
-        return MathConsts.M_SQRT_PI_2 * spsp.erfcx(x * MathConsts.M_SQRT1_2)
 
     @staticmethod
     def logrel(x):

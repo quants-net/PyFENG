@@ -75,7 +75,7 @@ class GarchUncorrBaroneAdesi2004(GarchParams, OptABC):
         price = m_bs.price(strike, spot, texp, cp)
 
         if self.order == 2:
-            price += 0.5*var*m_bs.d2_var(strike, spot, texp, cp)
+            price += 0.5*var*m_bs.var_d2(strike, spot, texp, cp)
         elif self.order > 2:
             raise ValueError(f"Not implemented for approx order: {self.order}")
 
