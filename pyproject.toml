@@ -30,9 +30,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/PyFE/PyFENG"
+Homepage = "https://github.com/quants-net/PyFENG"
 Documentation = "https://pyfeng.readthedocs.io/"
-"Bug Tracker" = "https://github.com/PyFE/PyFENG/issues"
+"Bug Tracker" = "https://github.com/quants-net/PyFENG/issues"
 
 [tool.setuptools_scm]
 
