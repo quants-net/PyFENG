@@ -34,7 +34,7 @@ derivative pricing.
 * Purely Python without C/C++ extensisons. 
 * Implemented with Python class.
 * Intended for academic use. By providing reference models, it saves researchers' time. 
-  See [PyFENG for Papers](https://github.com/PyFE/PyfengForPapers) in [Related Projects](#related-projects) below.
+  See [PyFENG for Papers](https://github.com/quants-net/PyfengForPapers) in [Related Projects](#related-projects) below.
 
 ## Installation
 ```sh
@@ -71,11 +71,10 @@ array([[ 5.75927238,  7.38869609,  5.52948546],
 ```
 
 ## Author
-* Prof. [Jaehyuk Choi](https://www.math.columbia.edu/mafn/learn-more/) (Columbia University MAFN Program Director). Email: pyfe@eml.cc
-
+* Prof. [Jaehyuk Choi](https://www.math.columbia.edu/mafn/learn-more/) (Columbia University MAFN Program Director). Email [Jaehyuk Choi](https://github.com/jaehyukchoi).
 ## Related Projects
-* __Commercial versions (implemented and optimized in C/C++)__ for some models are available. Email the author at pyfe@eml.cc.
-* [PyFENG for Papers](https://github.com/PyFE/PyfengForPapers) is a collection of Jupyter notebooks that reproduce the 
-  results of financial engineering research papers using [PyFENG](https://github.com/PyFE/PyFENG).
-* [FER: Financial Engineering in R](https://cran.r-project.org/package=FER) developed by the same author.
+* __Commercial versions (implemented and optimized in C/C++)__ for some models are available. Email [Jaehyuk Choi](https://github.com/jaehyukchoi).
+* [PyFENG for Papers](https://github.com/quants-net/PyfengForPapers) is a collection of Jupyter notebooks that reproduce the 
+  results of financial engineering research papers using [PyFENG](https://github.com/quants-net/PyFENG).
+* [FER: Financial Engineering in R](https://pyfe.github.io/FE-R/) developed by the same author.
 Not all models in `PyFENG` are implemented in `FER`. `FER` is a subset of `PyFENG`. 
