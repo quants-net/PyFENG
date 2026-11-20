@@ -63,8 +63,11 @@ class BsmAsianJsu(BsmParams, OptABC):
         # The j=0 term (exp(0)=1) absorbs the "-1" in (exp(Sigma_k*T)-1) of the explicit form.
         # Both n=1 and n=2 cases verified algebraically; n=1 gives (exp((r-q)*T)-1)/((r-q)*T).
         #
-        # KNOWN BUG: division by zero when 2*beta+i+j=0 for any 0<=i<j<=n, i.e., when
-        # r-q = sigma^2*(1-i-j)/2. For n<=4 the first case is r=q (i=0,j=1). No fix implemented.
+        # Higher moments still have poles when 2*beta+i+j=0 for 0<=i<j<=n.
+        # The first moment has an analytic limit, evaluated with exprel below.
+        if n == 1:
+            return spsp.exprel((self.intr - self.divr) * texp)
+
         lam = self.sigma
         v = (self.intr - self.divr - lam ** 2 / 2) / lam
         beta = v / lam
